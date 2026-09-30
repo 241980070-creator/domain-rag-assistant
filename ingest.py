@@ -1,6 +1,6 @@
 from functools import lru_cache
 import os
-os.environ["HF_HUB_OFFLINE"] = "1"
+
 import json
 import chardet
 import pandas as pd
