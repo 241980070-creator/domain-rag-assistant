@@ -1,8 +1,20 @@
-import json
+import os
+import tempfile
 import uuid
 
-import requests
 import streamlit as st
+
+from dotenv import load_dotenv
+
+from ingest import index_document
+from robust_pipeline import stream_answer
+
+
+# ============================================================
+# LOAD ENVIRONMENT
+# ============================================================
+
+load_dotenv(".env")
 
 
 # ============================================================
@@ -17,30 +29,18 @@ st.set_page_config(
 
 
 # ============================================================
-# BACKEND
-# ============================================================
-
-BACKEND_URL = "http://127.0.0.1:8000"
-
-
-# ============================================================
 # SESSION STATE
 # ============================================================
 
 if "session_id" not in st.session_state:
-
-    st.session_state.session_id = str(
-        uuid.uuid4()
-    )
+    st.session_state.session_id = str(uuid.uuid4())
 
 
 if "messages" not in st.session_state:
-
     st.session_state.messages = []
 
 
 if "processed_files" not in st.session_state:
-
     st.session_state.processed_files = []
 
 
@@ -56,7 +56,7 @@ st.caption(
 
 
 # ============================================================
-# SUPPORTED EXTENSIONS
+# SUPPORTED FILE TYPES
 # ============================================================
 
 SUPPORTED_TYPES = [
@@ -101,97 +101,109 @@ with st.sidebar:
             use_container_width=True,
         ):
 
+            temp_path = None
+
             with st.spinner(
                 "Reading, chunking and indexing document..."
             ):
 
                 try:
 
-                    files = {
-                        "file": (
-                            uploaded_file.name,
-                            uploaded_file.getvalue(),
-                            uploaded_file.type
-                            or "application/octet-stream",
+                    # --------------------------------------------
+                    # Save uploaded file temporarily
+                    # --------------------------------------------
+
+                    file_extension = os.path.splitext(
+                        uploaded_file.name
+                    )[1]
+
+                    with tempfile.NamedTemporaryFile(
+                        delete=False,
+                        suffix=file_extension,
+                    ) as temp_file:
+
+                        temp_file.write(
+                            uploaded_file.getvalue()
                         )
-                    }
 
-                    data = {
-                        "session_id":
-                            st.session_state.session_id
-                    }
+                        temp_path = temp_file.name
 
-                    response = requests.post(
-                        f"{BACKEND_URL}/api/upload",
-                        files=files,
-                        data=data,
-                        timeout=300,
+
+                    # --------------------------------------------
+                    # Run existing ingestion pipeline
+                    # --------------------------------------------
+
+                    result = index_document(
+                        file_path=temp_path,
+                        session_id=st.session_state.session_id,
                     )
 
-                    if response.status_code == 200:
 
-                        result = response.json()
+                    # --------------------------------------------
+                    # Remove temporary file
+                    # --------------------------------------------
 
-                        filename = uploaded_file.name
+                    if temp_path and os.path.exists(temp_path):
 
-                        if filename not in st.session_state.processed_files:
+                        os.remove(temp_path)
 
-                            st.session_state.processed_files.append(
-                                filename
-                            )
+                        temp_path = None
 
-                        st.success(
-                            f"Successfully indexed `{filename}`"
+
+                    # --------------------------------------------
+                    # Save processed filename
+                    # --------------------------------------------
+
+                    filename = uploaded_file.name
+
+                    if filename not in st.session_state.processed_files:
+
+                        st.session_state.processed_files.append(
+                            filename
                         )
 
-                        st.write(
-                            f"Documents loaded: "
-                            f"{result.get('documents_loaded', 0)}"
-                        )
 
-                        st.write(
-                            f"Chunks indexed: "
-                            f"{result.get('chunks_indexed', 0)}"
-                        )
+                    # --------------------------------------------
+                    # Success message
+                    # --------------------------------------------
 
-                    else:
-
-                        try:
-                            error_data = response.json()
-
-                            error_message = error_data.get(
-                                "detail",
-                                response.text
-                            )
-
-                        except Exception:
-
-                            error_message = response.text
-
-                        st.error(
-                            "Upload failed:\n\n"
-                            f"{error_message}"
-                        )
-
-                except requests.exceptions.ConnectionError:
-
-                    st.error(
-                        "Could not connect to FastAPI.\n\n"
-                        "Make sure app.py is running."
+                    st.success(
+                        f"Successfully indexed `{filename}`"
                     )
 
-                except requests.exceptions.Timeout:
 
-                    st.error(
-                        "The document took too long to process."
+                    st.write(
+                        f"Documents loaded: "
+                        f"{result.get('documents', 0)}"
                     )
+
+                    st.write(
+                        f"Chunks indexed: "
+                        f"{result.get('chunks', 0)}"
+                    )
+
+                    st.write(
+                        f"Processing time: "
+                        f"{result.get('total_time', 0)} seconds"
+                    )
+
 
                 except Exception as e:
 
+                    # --------------------------------------------
+                    # Cleanup temporary file if something fails
+                    # --------------------------------------------
+
+                    if temp_path and os.path.exists(temp_path):
+
+                        os.remove(temp_path)
+
+
                     st.error(
-                        f"Unexpected error: "
-                        f"{type(e).__name__}: {str(e)}"
+                        "Document processing failed."
                     )
+
+                    st.exception(e)
 
 
     # ========================================================
@@ -208,44 +220,6 @@ with st.sidebar:
 
             st.markdown(
                 f"✅ `{filename}`"
-            )
-
-
-    # ========================================================
-    # CONNECTION CHECK
-    # ========================================================
-
-    st.divider()
-
-    if st.button(
-        "Check Backend",
-        use_container_width=True
-    ):
-
-        try:
-
-            response = requests.get(
-                f"{BACKEND_URL}/health",
-                timeout=10
-            )
-
-            if response.status_code == 200:
-
-                st.success(
-                    "FastAPI is running."
-                )
-
-            else:
-
-                st.error(
-                    f"Backend returned "
-                    f"{response.status_code}"
-                )
-
-        except Exception as e:
-
-            st.error(
-                f"Backend unavailable: {e}"
             )
 
 
@@ -277,6 +251,7 @@ if user_question:
 
     user_question = user_question.strip()
 
+
     if not user_question:
 
         st.warning(
@@ -295,6 +270,7 @@ if user_question:
         "content": user_question,
     })
 
+
     with st.chat_message("user"):
 
         st.markdown(
@@ -312,177 +288,51 @@ if user_question:
 
         full_response = ""
 
+
         try:
 
-            payload = {
-                "session_id":
-                    st.session_state.session_id,
+            # ------------------------------------------------
+            # Directly call existing RAG pipeline
+            # ------------------------------------------------
 
-                "question":
-                    user_question,
-            }
+            for token in stream_answer(
+                question=user_question,
+                session_id=st.session_state.session_id,
+                history=st.session_state.messages[:-1],
+            ):
 
-            with requests.post(
-                f"{BACKEND_URL}/api/chat/stream",
-                json=payload,
-                stream=True,
-                timeout=300,
-            ) as response:
-
-                if response.status_code != 200:
-
-                    try:
-
-                        error_data = response.json()
-
-                        error_message = error_data.get(
-                            "detail",
-                            response.text
-                        )
-
-                    except Exception:
-
-                        error_message = response.text
-
-                    st.error(
-                        f"Backend Error "
-                        f"({response.status_code}): "
-                        f"{error_message}"
-                    )
-
-                    st.stop()
-
-
-                # =================================================
-                # SERVER-SENT EVENTS
-                # =================================================
-
-                for line in response.iter_lines(
-                    decode_unicode=True
-                ):
-
-                    if not line:
-
-                        continue
-
-                    if not line.startswith(
-                        "data: "
-                    ):
-
-                        continue
-
-                    data_string = line[
-                        len("data: "):
-                    ].strip()
-
-
-                    # ================================
-                    # END OF STREAM
-                    # ================================
-
-                    if data_string == "[DONE]":
-
-                        break
-
-
-                    # ================================
-                    # PARSE EVENT
-                    # ================================
-
-                    try:
-
-                        data = json.loads(
-                            data_string
-                        )
-
-                    except json.JSONDecodeError:
-
-                        full_response += data_string
-
-                        placeholder.markdown(
-                            full_response + "▌"
-                        )
-
-                        continue
-
-
-                    # ================================
-                    # BACKEND ERROR
-                    # ================================
-
-                    if "error" in data:
-
-                        error_message = data["error"]
-
-                        full_response = (
-                            "❌ **RAG/Groq Error:**\n\n"
-                            f"`{error_message}`"
-                        )
-
-                        placeholder.markdown(
-                            full_response
-                        )
-
-                        break
-
-
-                    # ================================
-                    # TOKEN
-                    # ================================
-
-                    token = data.get(
-                        "token",
-                        ""
-                    )
-
-                    if token:
-
-                        full_response += token
-
-                        placeholder.markdown(
-                            full_response + "▌"
-                        )
-
-
-                # =================================================
-                # FINAL RESPONSE
-                # =================================================
+                full_response += token
 
                 placeholder.markdown(
-                    full_response
+                    full_response + "▌"
                 )
 
 
-                # =================================================
-                # SAVE ASSISTANT MESSAGE
-                # =================================================
+            # ------------------------------------------------
+            # Final response
+            # ------------------------------------------------
 
-                if full_response:
-
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": full_response,
-                    })
-
-
-        except requests.exceptions.ConnectionError:
-
-            placeholder.error(
-                "❌ Could not connect to FastAPI.\n\n"
-                "Make sure `app.py` is running."
+            placeholder.markdown(
+                full_response
             )
 
 
-        except requests.exceptions.Timeout:
+            # ------------------------------------------------
+            # Save assistant message
+            # ------------------------------------------------
 
-            placeholder.error(
-                "❌ The request timed out."
-            )
+            if full_response:
+
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": full_response,
+                })
 
 
         except Exception as e:
 
             placeholder.error(
-                "❌ Unexpected error:\n\n"
-                f"{type(e).__name__}: {str(e)}"
+                "❌ RAG/Groq Error"
             )
+
+            st.exception(e)
