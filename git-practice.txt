@@ -1,0 +1,8 @@
+PS D:\GitHub-Projects\domain-rag-assistant> dir git-practice.txt
+dir : Cannot find path 'D:\GitHub-Projects\domain-rag-assistant\git-practice.txt' because it does not exist.
+At line:1 char:1
++ dir git-practice.txt
++ ~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (D:\GitHub-Proje...it-practice.txt:String) [Get-ChildItem], ItemNotFoundE 
+   xception
+    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetChildItemCommand
